@@ -1,0 +1,6 @@
+{
+  "name": "BioWeb",
+  "description": "Premium AI-powered healthcare platform featuring medical Chat, disease predictors, automated prescription scanner, comprehensive medicine database, and dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
