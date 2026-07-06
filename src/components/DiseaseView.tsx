@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { DISEASE_LIBRARY } from "../data";
 import { DiseaseLibraryItem } from "../types";
+import { isStaticDeployment, getClientApiKey, callGeminiDirect, getOfflineDiseaseDetails } from "../utils/apiFallback";
 
 export default function DiseaseView() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -28,33 +29,70 @@ export default function DiseaseView() {
 
     setIsLoading(true);
     try {
-      const res = await fetch("/api/disease-details", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: term })
-      });
+      let diseaseData: any = null;
 
-      let data: any;
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        data = await res.json();
-      } else {
-        const text = await res.text();
-        throw new Error(text.slice(0, 200) || `Server returned status ${res.status}`);
+      const apiKey = getClientApiKey();
+      const isStatic = isStaticDeployment();
+
+      if (isStatic || apiKey) {
+        if (apiKey) {
+          const prompt = `Formulate a comprehensive medical fact sheet for the disease pathology named: "${term}". Ensure accuracy and clear professional tone.`;
+          const systemInstruction = "You are an expert clinical pathology database system. Return complete disease monographs in structured JSON. Ensure no field is left unpopulated.";
+          const responseSchema = {
+            type: "OBJECT",
+            required: [
+              "name", "image", "symptoms", "causes", "stages", "complications", "treatment", "medicines", "lifestyleTips", "emergencySigns"
+            ],
+            properties: {
+              name: { type: "STRING" },
+              image: { type: "STRING" },
+              symptoms: { type: "ARRAY", items: { type: "STRING" } },
+              causes: { type: "ARRAY", items: { type: "STRING" } },
+              stages: { type: "ARRAY", items: { type: "STRING" } },
+              complications: { type: "ARRAY", items: { type: "STRING" } },
+              treatment: { type: "STRING" },
+              medicines: { type: "ARRAY", items: { type: "STRING" } },
+              lifestyleTips: { type: "ARRAY", items: { type: "STRING" } },
+              emergencySigns: { type: "ARRAY", items: { type: "STRING" } }
+            }
+          };
+          const jsonText = await callGeminiDirect(apiKey, prompt, systemInstruction, responseSchema);
+          diseaseData = JSON.parse(jsonText || "{}");
+        } else if (isStatic) {
+          diseaseData = getOfflineDiseaseDetails(term);
+        }
       }
 
-      if (!res.ok) {
-        throw new Error(data?.error || `Pathology lookup failed with status ${res.status}`);
+      if (!diseaseData) {
+        const res = await fetch("/api/disease-details", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: term })
+        });
+
+        let data: any;
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          throw new Error(text.slice(0, 200) || `Server returned status ${res.status}`);
+        }
+
+        if (!res.ok) {
+          throw new Error(data?.error || `Pathology lookup failed with status ${res.status}`);
+        }
+        diseaseData = data;
       }
 
       setCustomDiseases(prev => {
         // Only append if it doesn't already exist in customDiseases
-        if (prev.some(d => d.name.toLowerCase() === data.name.toLowerCase())) {
+        if (prev.some(d => d.name.toLowerCase() === diseaseData.name.toLowerCase())) {
           return prev;
         }
-        return [...prev, data];
+        return [...prev, diseaseData];
       });
-      setSelectedDisease(data);
+      setSelectedDisease(diseaseData);
     } catch (err: any) {
       console.error(err);
       const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");

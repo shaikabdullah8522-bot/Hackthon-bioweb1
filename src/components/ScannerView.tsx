@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { createWorker } from "tesseract.js";
 import { MedicineDetails } from "../types";
+import { isStaticDeployment, getClientApiKey, callGeminiDirect, parsePrescriptionOffline } from "../utils/apiFallback";
 
 export default function ScannerView() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -47,19 +48,64 @@ export default function ScannerView() {
     setError(null);
 
     try {
-      const res = await fetch("/api/extract-prescription", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text })
-      });
+      let parsedData: any = null;
 
-      const data = await res.json();
+      const apiKey = getClientApiKey();
+      const isStatic = isStaticDeployment();
 
-      if (!res.ok) {
-        throw new Error(data.error || "Prescription parser server returned an issue");
+      if (isStatic || apiKey) {
+        if (apiKey) {
+          const prompt = 
+            `Analyze the raw extracted prescription text and identify any recognizable medications. ` +
+            `For each identified medicine, lookup credible medical details and formulate structured outputs. ` +
+            `Raw prescription OCR text: "${text}"`;
+          const systemInstruction = "You are an expert pharmacology parser. Read messy OCR text, identify medicines, and return structured info.";
+          const responseSchema = {
+            type: "OBJECT",
+            required: ["medicines"],
+            properties: {
+              medicines: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  required: ["name", "uses", "dosage", "sideEffects", "storage", "manufacturer", "alternatives", "warnings"],
+                  properties: {
+                    name: { type: "STRING" },
+                    uses: { type: "ARRAY", items: { type: "STRING" } },
+                    dosage: { type: "STRING" },
+                    sideEffects: { type: "ARRAY", items: { type: "STRING" } },
+                    storage: { type: "STRING" },
+                    manufacturer: { type: "STRING" },
+                    alternatives: { type: "ARRAY", items: { type: "STRING" } },
+                    warnings: { type: "STRING" }
+                  }
+                }
+              }
+            }
+          };
+          const jsonText = await callGeminiDirect(apiKey, prompt, systemInstruction, responseSchema);
+          parsedData = JSON.parse(jsonText || '{"medicines":[]}');
+        } else if (isStatic) {
+          parsedData = parsePrescriptionOffline(text);
+        }
       }
 
-      setExtractedMeds(data.medicines || []);
+      if (!parsedData) {
+        const res = await fetch("/api/extract-prescription", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || "Prescription parser server returned an issue");
+        }
+        parsedData = data;
+      }
+
+      setExtractedMeds(parsedData.medicines || []);
     } catch (err: any) {
       console.error(err);
       const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");

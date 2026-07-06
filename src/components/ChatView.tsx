@@ -4,6 +4,7 @@ import {
   Send, Bot, User, Trash2, Plus, Sparkles, Mic, MicOff, Volume2, VolumeX, ShieldAlert
 } from "lucide-react";
 import { Message, ChatSession } from "../types";
+import { isStaticDeployment, getClientApiKey, callGeminiDirect, getOfflineChatResponse } from "../utils/apiFallback";
 
 export default function ChatView() {
   const [sessions, setSessions] = useState<ChatSession[]>([
@@ -149,29 +150,54 @@ export default function ChatView() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: updatedMessages })
-      });
+      let responseText = "";
 
-      let data: any;
-      const contentType = response.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        data = await response.json();
-      } else {
-        const text = await response.text();
-        throw new Error(text.slice(0, 200) || `Server returned status ${response.status}`);
+      const apiKey = getClientApiKey();
+      const isStatic = isStaticDeployment();
+
+      if (isStatic || apiKey) {
+        if (apiKey) {
+          const systemInstruction = 
+            "You are BioWeb AI, a highly professional, educational medical intelligence assistant. " +
+            "Your objective is to provide detailed, educational healthcare insights based on inquiries. " +
+            "Under no circumstances should you claim to provide official diagnoses, prescriptions, or clinical treatments. " +
+            "Provide responses in clear, structured Markdown. " +
+            "Always append a short standard medical disclaimer at the absolute bottom of the message stating: " +
+            "'*DISCLAIMER: This response is for educational purposes only and does not constitute medical advice or a professional clinical diagnosis. Always consult a qualified physician for healthcare decisions.*'";
+
+          const prompt = updatedMessages.map(m => `${m.sender === "user" ? "User" : "BioWeb AI"}: ${m.text}`).join("\n") + "\nBioWeb AI:";
+          responseText = await callGeminiDirect(apiKey, prompt, systemInstruction);
+        } else if (isStatic) {
+          responseText = getOfflineChatResponse(inputText);
+        }
       }
 
-      if (!response.ok) {
-        throw new Error(data?.error || `Server returned error status ${response.status}`);
+      if (!responseText) {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: updatedMessages })
+        });
+
+        let data: any;
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          data = await response.json();
+        } else {
+          const text = await response.text();
+          throw new Error(text.slice(0, 200) || `Server returned status ${response.status}`);
+        }
+
+        if (!response.ok) {
+          throw new Error(data?.error || `Server returned error status ${response.status}`);
+        }
+        responseText = data.text;
       }
 
       const aiMsg: Message = {
         id: "m-" + (Date.now() + 1),
         sender: "ai",
-        text: data.text,
+        text: responseText,
         timestamp: new Date()
       };
 
@@ -184,7 +210,7 @@ export default function ChatView() {
 
       // Speak text if TTS is enabled
       if (isSpeechEnabled) {
-        speakText(data.text);
+        speakText(responseText);
       }
     } catch (err: any) {
       console.error("Chat error:", err);

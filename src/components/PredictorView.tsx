@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { DiseasePrediction } from "../types";
 import { COMMON_SYMPTOMS } from "../data";
+import { isStaticDeployment, getClientApiKey, callGeminiDirect, getOfflinePrediction } from "../utils/apiFallback";
 
 export default function PredictorView() {
   const [selectedSymptoms, setSelectedSymptoms] = useState<string[]>([]);
@@ -50,26 +51,71 @@ export default function PredictorView() {
     setPrediction(null);
 
     try {
-      const res = await fetch("/api/predict", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symptoms: selectedSymptoms })
-      });
+      let predictionData: any = null;
 
-      let data: any;
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        data = await res.json();
-      } else {
-        const text = await res.text();
-        throw new Error(text.slice(0, 200) || `Server returned status ${res.status}`);
+      const apiKey = getClientApiKey();
+      const isStatic = isStaticDeployment();
+
+      if (isStatic || apiKey) {
+        if (apiKey) {
+          const symptomsStr = selectedSymptoms.join(", ");
+          const systemInstruction = "You are an educational clinical database model. Analyze symptoms and return an objective estimation of the likely condition. Be conservative and highlight that it's educational.";
+          const prompt = `Analyze the following patient symptoms and predict the most likely condition based on educational knowledge. Symptoms: "${symptomsStr}".`;
+          const responseSchema = {
+            type: "OBJECT",
+            required: [
+              "disease",
+              "confidence",
+              "severity",
+              "symptoms",
+              "treatmentOverview",
+              "specialist",
+              "medicalTests",
+              "emergencyWarning",
+              "prevention"
+            ],
+            properties: {
+              disease: { type: "STRING" },
+              confidence: { type: "INTEGER" },
+              severity: { type: "STRING" },
+              symptoms: { type: "ARRAY", items: { type: "STRING" } },
+              treatmentOverview: { type: "STRING" },
+              specialist: { type: "STRING" },
+              medicalTests: { type: "ARRAY", items: { type: "STRING" } },
+              emergencyWarning: { type: "STRING" },
+              prevention: { type: "ARRAY", items: { type: "STRING" } }
+            }
+          };
+          const jsonText = await callGeminiDirect(apiKey, prompt, systemInstruction, responseSchema);
+          predictionData = JSON.parse(jsonText || "{}");
+        } else if (isStatic) {
+          predictionData = getOfflinePrediction(selectedSymptoms);
+        }
       }
 
-      if (!res.ok) {
-        throw new Error(data?.error || `Symptom analyzer failed with status ${res.status}`);
+      if (!predictionData) {
+        const res = await fetch("/api/predict", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symptoms: selectedSymptoms })
+        });
+
+        let data: any;
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          throw new Error(text.slice(0, 200) || `Server returned status ${res.status}`);
+        }
+
+        if (!res.ok) {
+          throw new Error(data?.error || `Symptom analyzer failed with status ${res.status}`);
+        }
+        predictionData = data;
       }
 
-      setPrediction(data);
+      setPrediction(predictionData);
     } catch (err: any) {
       console.error(err);
       const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");

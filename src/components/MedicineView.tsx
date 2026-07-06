@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { MedicineDetails } from "../types";
 import { MEDICINE_DATABASE } from "../data";
+import { isStaticDeployment, getClientApiKey, callGeminiDirect, getOfflineMedicineDetails } from "../utils/apiFallback";
 
 interface SearchableMedicine {
   name: string;
@@ -122,28 +123,94 @@ export default function MedicineView() {
     setError(null);
     setMedicine(null);
 
-    // 2. Fetch from server-side Gemini monograph generator for arbitrary meds
+    // 1. Fast local database lookup
+    const matchedKey = Object.keys(MEDICINE_DATABASE).find(
+      key => key.toLowerCase() === term.toLowerCase()
+    );
+
+    if (matchedKey) {
+      setMedicine(MEDICINE_DATABASE[matchedKey]);
+      setIsLoading(false);
+      return;
+    }
+
+    // 2. Dual-mode AI / Static resolver
     try {
-      const res = await fetch("/api/medicine-details", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: term })
-      });
+      let medData: any = null;
 
-      let data: any;
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        data = await res.json();
-      } else {
-        const text = await res.text();
-        throw new Error(text.slice(0, 200) || `Server returned status ${res.status}`);
+      const apiKey = getClientApiKey();
+      const isStatic = isStaticDeployment();
+
+      if (isStatic || apiKey) {
+        if (apiKey) {
+          const prompt = `Formulate a comprehensive medical fact sheet for the medicine named: "${term}". Ensure accuracy and clear professional tone.`;
+          const systemInstruction = "You are an expert clinical database system. Return complete medical monographs in structured JSON. Ensure no field is left unpopulated.";
+          const responseSchema = {
+            type: "OBJECT",
+            required: [
+              "name", "uses", "dosage", "sideEffects", "storage", "manufacturer", "composition",
+              "pregnancyWarning", "breastfeedingWarning", "alcoholInteraction", "foodInteraction",
+              "expiryInfo", "availableStrengths", "alternatives", "warnings", "faqs"
+            ],
+            properties: {
+              name: { type: "STRING" },
+              uses: { type: "ARRAY", items: { type: "STRING" } },
+              dosage: { type: "STRING" },
+              sideEffects: { type: "ARRAY", items: { type: "STRING" } },
+              storage: { type: "STRING" },
+              manufacturer: { type: "STRING" },
+              composition: { type: "STRING" },
+              pregnancyWarning: { type: "STRING" },
+              breastfeedingWarning: { type: "STRING" },
+              alcoholInteraction: { type: "STRING" },
+              foodInteraction: { type: "STRING" },
+              expiryInfo: { type: "STRING" },
+              availableStrengths: { type: "ARRAY", items: { type: "STRING" } },
+              alternatives: { type: "ARRAY", items: { type: "STRING" } },
+              warnings: { type: "STRING" },
+              faqs: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  required: ["question", "answer"],
+                  properties: {
+                    question: { type: "STRING" },
+                    answer: { type: "STRING" }
+                  }
+                }
+              }
+            }
+          };
+          const jsonText = await callGeminiDirect(apiKey, prompt, systemInstruction, responseSchema);
+          medData = JSON.parse(jsonText || "{}");
+        } else if (isStatic) {
+          medData = getOfflineMedicineDetails(term);
+        }
       }
 
-      if (!res.ok) {
-        throw new Error(data?.error || `Unable to formulate monograph: status ${res.status}`);
+      if (!medData) {
+        const res = await fetch("/api/medicine-details", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: term })
+        });
+
+        let data: any;
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          throw new Error(text.slice(0, 200) || `Server returned status ${res.status}`);
+        }
+
+        if (!res.ok) {
+          throw new Error(data?.error || `Unable to formulate monograph: status ${res.status}`);
+        }
+        medData = data;
       }
 
-      setMedicine(data);
+      setMedicine(medData);
     } catch (err: any) {
       console.error(err);
       const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");

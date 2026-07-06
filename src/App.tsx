@@ -13,12 +13,16 @@ import AboutContactView from "./components/AboutContactView";
 import IntakeModal from "./components/IntakeModal";
 import { DashboardStats, UserProfile } from "./types";
 import { INITIAL_DASHBOARD_STATS } from "./data";
-import { AlertTriangle, Activity, ArrowLeft } from "lucide-react";
+import { isStaticDeployment, getClientApiKey, setClientApiKey } from "./utils/apiFallback";
+import { AlertTriangle, Activity, ArrowLeft, Settings, Key, Globe, Check, AlertCircle } from "lucide-react";
 
 export default function App() {
   const [activeView, setActiveView] = useState<string>("home");
   const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
   const [stats, setStats] = useState<DashboardStats>(INITIAL_DASHBOARD_STATS);
+  const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
+  const [clientApiKey, setClientApiKeyLocal] = useState<string>(() => getClientApiKey());
+  const [isStatic, setIsStatic] = useState<boolean>(() => isStaticDeployment());
 
   const [profile, setProfile] = useState<UserProfile | null>(() => {
     const saved = localStorage.getItem("bioweb_user_profile");
@@ -168,6 +172,12 @@ export default function App() {
     );
   };
 
+  const handleSaveApiKey = (key: string) => {
+    setClientApiKey(key);
+    setClientApiKeyLocal(key);
+    setShowApiKeyModal(false);
+  };
+
   return (
     <div className={`min-h-screen transition-colors duration-300 ${isDarkMode ? "bg-slate-950 text-white" : "bg-cyan-50/40 text-slate-900"}`}>
       {/* Dynamic Background Blurs */}
@@ -184,6 +194,34 @@ export default function App() {
           isDarkMode={isDarkMode}
           setIsDarkMode={setIsDarkMode}
         />
+
+        {/* Static Deployment Settings Banner */}
+        {isStatic && (
+          <div className="w-full bg-slate-900/60 backdrop-blur-sm border-b border-white/10 py-2.5 px-4 z-30">
+            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 text-slate-300 text-center sm:text-left">
+                {clientApiKey ? (
+                  <>
+                    <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span><strong>GitHub Pages Active</strong>: Your Gemini API Key is loaded. Live medical AI is active!</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="h-2 w-2 rounded-full bg-amber-500" />
+                    <span><strong>GitHub Pages Active</strong>: Server is offline. Running with offline clinical diagnostics.</span>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => setShowApiKeyModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-cyan-500/40 rounded-lg text-slate-300 hover:text-cyan-400 font-medium transition-all cursor-pointer"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                Configure Gemini API Key
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Active Route Workspace */}
         <main className="flex-1">
@@ -205,6 +243,83 @@ export default function App() {
 
       {/* Intake Form Modal Overlay (forces profile details input on initial load) */}
       {!profile && <IntakeModal onSubmit={handleIntakeSubmit} />}
+
+      {/* API Key Modal */}
+      <AnimatePresence>
+        {showApiKeyModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-md border border-white/10 bg-slate-900 rounded-2xl p-6 shadow-2xl relative space-y-6 text-white"
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-cyan-950 text-cyan-400">
+                    <Key className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-lg">Static Deployment Settings</h3>
+                    <p className="text-xs text-slate-400">Configure client-side medical AI</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-300 space-y-3 bg-slate-950/50 p-4 rounded-xl border border-white/5 leading-relaxed">
+                <div className="flex items-center gap-1.5 text-cyan-400 font-semibold mb-1">
+                  <Globe className="h-4 w-4" />
+                  GitHub Pages Active
+                </div>
+                <p>
+                  Because this application is hosted on GitHub Pages (which is a static hosting provider), direct connection to the server-side medical database and AI model is offline.
+                </p>
+                <p>
+                  <strong>Unlocking live AI</strong>: You can provide your own personal Google Gemini API Key. It will be saved securely on your browser (<code className="bg-slate-850 px-1 py-0.5 rounded text-[10px]">localStorage</code>) and sent directly to Google's API endpoint. Your key is never shared or stored on any server.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-slate-400 font-medium">Gemini API Key</label>
+                <input
+                  type="password"
+                  value={clientApiKey}
+                  onChange={(e) => setClientApiKeyLocal(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500/50"
+                />
+                <p className="text-[10px] text-slate-500">
+                  Don't have an API Key? Get one free in 1 minute from <a href="https://ai.google.dev/" target="_blank" rel="noopener noreferrer" className="text-cyan-400 underline hover:text-cyan-300">Google AI Studio</a>.
+                </p>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => handleSaveApiKey("")}
+                  className="flex-1 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs font-semibold text-slate-300 transition-colors cursor-pointer"
+                >
+                  Clear / Offline Mode
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveApiKey(clientApiKey)}
+                  className="flex-1 px-4 py-2 bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 rounded-xl text-xs font-semibold text-white transition-all shadow-lg shadow-cyan-500/10 cursor-pointer"
+                >
+                  Save Configuration
+                </button>
+              </div>
+
+              <button 
+                onClick={() => setShowApiKeyModal(false)}
+                className="absolute top-4 right-4 text-slate-500 hover:text-white transition-colors cursor-pointer"
+              >
+                ✕
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
