@@ -14,11 +14,24 @@ app.use(express.json({ limit: "10mb" }));
 // Helper to initialize the Gemini API client lazily
 let aiClient: GoogleGenAI | null = null;
 
-function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+function getGeminiClient(customApiKey?: string): GoogleGenAI {
+  const apiKey = customApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey === "") {
-    throw new Error("GEMINI_API_KEY environment variable is not configured. Please define GEMINI_API_KEY in your project Settings in AI Studio.");
+    throw new Error("GEMINI_API_KEY environment variable is not configured. Please define GEMINI_API_KEY in your project Settings in AI Studio or enter your personal key in the top banner.");
   }
+  
+  if (customApiKey) {
+    // Return a fresh instance for the custom client-side key to avoid cross-request leaks
+    return new GoogleGenAI({
+      apiKey: customApiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build-custom",
+        },
+      },
+    });
+  }
+
   if (!aiClient) {
     aiClient = new GoogleGenAI({
       apiKey: apiKey,
@@ -86,6 +99,58 @@ async function generateContentWithRetryAndFallback(
   throw lastError;
 }
 
+// Helper function to call OpenAI chat completions endpoint
+async function callOpenAI(
+  apiKey: string | undefined,
+  messages: any[],
+  systemInstruction?: string,
+  jsonFormat: boolean = false
+): Promise<string> {
+  const key = apiKey || process.env.OPENAI_API_KEY;
+  if (!key || key === "MY_OPENAI_API_KEY" || key === "") {
+    throw new Error("OPENAI_API_KEY is not configured. Please enter your personal OpenAI API Key in the settings banner.");
+  }
+
+  const url = "https://api.openai.com/v1/chat/completions";
+  const formattedMessages = [];
+  if (systemInstruction) {
+    formattedMessages.push({ role: "system", content: systemInstruction });
+  }
+  formattedMessages.push(...messages);
+
+  const body: any = {
+    model: "gpt-4o-mini",
+    messages: formattedMessages,
+    temperature: 0.2
+  };
+
+  if (jsonFormat) {
+    body.response_format = { type: "json_object" };
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${key}`
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    const message = errData.error?.message || `HTTP error ${response.status}`;
+    throw new Error(`OpenAI API error: ${message}`);
+  }
+
+  const data: any = await response.json();
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) {
+    throw new Error("No response generated from OpenAI API.");
+  }
+  return text;
+}
+
 // -------------------------------------------------------------------------
 // API ROUTES
 // -------------------------------------------------------------------------
@@ -94,7 +159,8 @@ async function generateContentWithRetryAndFallback(
 app.get("/api/health", (req: Request, res: Response) => {
   let geminiActive = false;
   try {
-    geminiActive = !!getGeminiClient();
+    const customKey = req.headers["x-gemini-api-key"] as string || req.headers["x-api-key"] as string;
+    geminiActive = !!getGeminiClient(customKey);
   } catch (err) {
     geminiActive = false;
   }
@@ -113,7 +179,9 @@ app.post("/api/chat", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid messages payload" });
     }
 
-    const ai = getGeminiClient();
+    const activeProvider = req.headers["x-active-provider"] as string || "gemini";
+    const customKey = req.headers["x-gemini-api-key"] as string || req.headers["x-api-key"] as string;
+    const customOpenAIKey = req.headers["x-openai-api-key"] as string;
 
     // Construct the context with safety rules
     const systemInstruction = 
@@ -123,6 +191,17 @@ app.post("/api/chat", async (req: Request, res: Response) => {
       "Provide responses in clear, structured Markdown. " +
       "Always append a short standard medical disclaimer at the absolute bottom of the message stating: " +
       "'*DISCLAIMER: This response is for educational purposes only and does not constitute medical advice or a professional clinical diagnosis. Always consult a qualified physician for healthcare decisions.*'";
+
+    if (activeProvider === "openai") {
+      const openAiMessages = messages.map(msg => ({
+        role: msg.sender === "user" ? "user" : "assistant",
+        content: msg.text
+      }));
+      const responseText = await callOpenAI(customOpenAIKey, openAiMessages, systemInstruction);
+      return res.json({ text: responseText });
+    }
+
+    const ai = getGeminiClient(customKey);
 
     // Format chat history for generateContent
     const contents = messages.map(msg => ({
@@ -154,8 +233,33 @@ app.post("/api/predict", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Please enter or select at least one symptom." });
     }
 
-    const ai = getGeminiClient();
+    const activeProvider = req.headers["x-active-provider"] as string || "gemini";
+    const customKey = req.headers["x-gemini-api-key"] as string || req.headers["x-api-key"] as string;
+    const customOpenAIKey = req.headers["x-openai-api-key"] as string;
     const symptomsStr = symptoms.join(", ");
+
+    if (activeProvider === "openai") {
+      const prompt = `Analyze the following patient symptoms and predict the most likely condition based on educational knowledge. Symptoms: "${symptomsStr}".`;
+      const systemInstruction = 
+        "You are an educational clinical database model. Analyze symptoms and return an objective estimation of the likely condition in JSON format. Be conservative and highlight that it's educational. " +
+        "You MUST return a JSON object conforming exactly to this structure:\n" +
+        "{\n" +
+        "  \"disease\": \"Name of the likely medical condition\",\n" +
+        "  \"confidence\": 80,\n" +
+        "  \"severity\": \"Low\",\n" +
+        "  \"symptoms\": [\"symptom1\"],\n" +
+        "  \"treatmentOverview\": \"Brief non-prescription overview description\",\n" +
+        "  \"specialist\": \"Medical specialist category\",\n" +
+        "  \"medicalTests\": [\"test1\"],\n" +
+        "  \"emergencyWarning\": \"Specific emergency warnings\",\n" +
+        "  \"prevention\": [\"prevention1\"]\n" +
+        "}";
+      const responseText = await callOpenAI(customOpenAIKey, [{ role: "user", content: prompt }], systemInstruction, true);
+      const parsedData = JSON.parse(responseText);
+      return res.json(parsedData);
+    }
+
+    const ai = getGeminiClient(customKey);
 
     const prompt = `Analyze the following patient symptoms and predict the most likely condition based on educational knowledge. Symptoms: "${symptomsStr}".`;
 
@@ -208,7 +312,44 @@ app.post("/api/extract-prescription", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "No prescription text provided." });
   }
 
-  const ai = getGeminiClient();
+  const activeProvider = req.headers["x-active-provider"] as string || "gemini";
+  const customKey = req.headers["x-gemini-api-key"] as string || req.headers["x-api-key"] as string;
+  const customOpenAIKey = req.headers["x-openai-api-key"] as string;
+
+  if (activeProvider === "openai") {
+    try {
+      const prompt = `Analyze the raw extracted prescription text and identify any recognizable medications. For each identified medicine, lookup credible medical details and formulate structured outputs. Raw prescription OCR text: "${ocrText}"`;
+      const systemInstruction = 
+        "You are an expert pharmacology parser. Read messy OCR text, identify medicines, and return structured info. " +
+        "You MUST return a JSON object conforming exactly to this structure:\n" +
+        "{\n" +
+        "  \"medicines\": [\n" +
+        "    {\n" +
+        "      \"name\": \"Standard generic or brand name\",\n" +
+        "      \"uses\": [\"use1\"],\n" +
+        "      \"dosage\": \"Usual recommended adult dosage details\",\n" +
+        "      \"sideEffects\": [\"side effect\"],\n" +
+        "      \"storage\": \"Correct storage instructions\",\n" +
+        "      \"manufacturer\": \"Reputable manufacturer\",\n" +
+        "      \"alternatives\": [\"alternative\"],\n" +
+        "      \"warnings\": \"Crucial safety warnings\"\n" +
+        "    }\n" +
+        "  ]\n" +
+        "}";
+      const responseText = await callOpenAI(customOpenAIKey, [{ role: "user", content: prompt }], systemInstruction, true);
+      const parsedData = JSON.parse(responseText);
+      return res.json(parsedData);
+    } catch (err: any) {
+      console.warn("OpenAI Prescription Parsing failed, falling back:", err);
+    }
+  }
+
+  let ai: any = null;
+  try {
+    ai = getGeminiClient(customKey);
+  } catch (err) {
+    console.warn("No Gemini client initialized, using offline prescription fallback:", err);
+  }
 
   if (!ai) {
     // Fallback extraction
@@ -319,7 +460,38 @@ app.post("/api/medicine-details", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Please provide a medicine name to lookup." });
     }
 
-    const ai = getGeminiClient();
+    const activeProvider = req.headers["x-active-provider"] as string || "gemini";
+    const customKey = req.headers["x-gemini-api-key"] as string || req.headers["x-api-key"] as string;
+    const customOpenAIKey = req.headers["x-openai-api-key"] as string;
+
+    if (activeProvider === "openai") {
+      const prompt = `Formulate a comprehensive medical fact sheet for the medicine named: "${name}". Ensure accuracy and clear professional tone.`;
+      const systemInstruction = 
+        "You are an expert clinical database system. Return complete medical monographs in structured JSON conforming exactly to this structure:\n" +
+        "{\n" +
+        "  \"name\": \"string (name of medicine)\",\n" +
+        "  \"uses\": [\"use1\"],\n" +
+        "  \"dosage\": \"string\",\n" +
+        "  \"sideEffects\": [\"sideEffect1\"],\n" +
+        "  \"storage\": \"string\",\n" +
+        "  \"manufacturer\": \"string\",\n" +
+        "  \"composition\": \"string (Chemical formulation or main strength ingredients)\",\n" +
+        "  \"pregnancyWarning\": \"string (Is it safe during pregnancy? Detail warnings)\",\n" +
+        "  \"breastfeedingWarning\": \"string (Is it safe during breastfeeding?)\",\n" +
+        "  \"alcoholInteraction\": \"string\",\n" +
+        "  \"foodInteraction\": \"string\",\n" +
+        "  \"expiryInfo\": \"string\",\n" +
+        "  \"availableStrengths\": [\"strength1\"],\n" +
+        "  \"alternatives\": [\"equivalent1\"],\n" +
+        "  \"warnings\": \"string (Contraindications and crucial warnings)\",\n" +
+        "  \"faqs\": [{\"question\": \"faq question\", \"answer\": \"faq answer\"}]\n" +
+        "}";
+      const responseText = await callOpenAI(customOpenAIKey, [{ role: "user", content: prompt }], systemInstruction, true);
+      const parsedData = JSON.parse(responseText);
+      return res.json(parsedData);
+    }
+
+    const ai = getGeminiClient(customKey);
 
     const prompt = `Formulate a comprehensive medical fact sheet for the medicine named: "${name}". Ensure accuracy and clear professional tone.`;
 
@@ -384,7 +556,33 @@ app.post("/api/disease-details", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Please provide a disease name to lookup." });
     }
 
-    const ai = getGeminiClient();
+    const activeProvider = req.headers["x-active-provider"] as string || "gemini";
+    const customKey = req.headers["x-gemini-api-key"] as string || req.headers["x-api-key"] as string;
+    const customOpenAIKey = req.headers["x-openai-api-key"] as string;
+
+    if (activeProvider === "openai") {
+      const prompt = `Formulate a comprehensive medical fact sheet for the disease pathology named: "${name}". Ensure accuracy and clear professional tone.`;
+      const systemInstruction = 
+        "You are an expert clinical pathology database system. Return complete disease monographs in structured JSON conforming exactly to this structure:\n" +
+        "{\n" +
+        "  \"name\": \"string (disease name)\",\n" +
+        "  \"image\": \"string (high-quality medical unsplash stock image url)\",\n" +
+        "  \"symptoms\": [\"symptom1\"],\n" +
+        "  \"causes\": [\"cause1\"],\n" +
+        "  \"stages\": [\"stage1\"],\n" +
+        "  \"complications\": [\"complication1\"],\n" +
+        "  \"treatment\": \"string\",\n" +
+        "  \"medicines\": [\"medicine1\"],\n" +
+        "  \"lifestyleTips\": [\"tip1\"],\n" +
+        "  \"emergencySigns\": [\"sign1\"]\n" +
+        "}";
+      const responseText = await callOpenAI(customOpenAIKey, [{ role: "user", content: prompt }], systemInstruction, true);
+      const parsedData = JSON.parse(responseText);
+      return res.json(parsedData);
+    }
+
+    const customKey_fallback = req.headers["x-gemini-api-key"] as string || req.headers["x-api-key"] as string;
+    const ai = getGeminiClient(customKey_fallback);
 
     const prompt = `Formulate a comprehensive medical fact sheet for the disease pathology named: "${name}". Ensure accuracy and clear professional tone.`;
 

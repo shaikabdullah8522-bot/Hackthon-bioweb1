@@ -4,7 +4,7 @@ import {
   Send, Bot, User, Trash2, Plus, Sparkles, Mic, MicOff, Volume2, VolumeX, ShieldAlert
 } from "lucide-react";
 import { Message, ChatSession } from "../types";
-import { isStaticDeployment, getClientApiKey, callGeminiDirect, getOfflineChatResponse } from "../utils/apiFallback";
+import { isStaticDeployment, getClientApiKey, getClientOpenAIKey, getActiveAIProvider, callGeminiDirect, callOpenAIDirect, getOfflineChatResponse } from "../utils/apiFallback";
 
 export default function ChatView() {
   const [sessions, setSessions] = useState<ChatSession[]>([
@@ -153,18 +153,25 @@ export default function ChatView() {
       let responseText = "";
 
       const apiKey = getClientApiKey();
+      const openAiKey = getClientOpenAIKey();
+      const activeProvider = getActiveAIProvider();
       const isStatic = isStaticDeployment();
 
-      if (isStatic || apiKey) {
-        if (apiKey) {
-          const systemInstruction = 
-            "You are BioWeb AI, a highly professional, educational medical intelligence assistant. " +
-            "Your objective is to provide detailed, educational healthcare insights based on inquiries. " +
-            "Under no circumstances should you claim to provide official diagnoses, prescriptions, or clinical treatments. " +
-            "Provide responses in clear, structured Markdown. " +
-            "Always append a short standard medical disclaimer at the absolute bottom of the message stating: " +
-            "'*DISCLAIMER: This response is for educational purposes only and does not constitute medical advice or a professional clinical diagnosis. Always consult a qualified physician for healthcare decisions.*'";
+      const useDirectMode = isStatic || (activeProvider === "openai" ? openAiKey : apiKey);
 
+      if (useDirectMode) {
+        const systemInstruction = 
+          "You are BioWeb AI, a highly professional, educational medical intelligence assistant. " +
+          "Your objective is to provide detailed, educational healthcare insights based on inquiries. " +
+          "Under no circumstances should you claim to provide official diagnoses, prescriptions, or clinical treatments. " +
+          "Provide responses in clear, structured Markdown. " +
+          "Always append a short standard medical disclaimer at the absolute bottom of the message stating: " +
+          "'*DISCLAIMER: This response is for educational purposes only and does not constitute medical advice or a professional clinical diagnosis. Always consult a qualified physician for healthcare decisions.*'";
+
+        if (activeProvider === "openai" && openAiKey) {
+          const prompt = updatedMessages.map(m => `${m.sender === "user" ? "User" : "BioWeb AI"}: ${m.text}`).join("\n") + "\nBioWeb AI:";
+          responseText = await callOpenAIDirect(openAiKey, prompt, systemInstruction);
+        } else if (activeProvider === "gemini" && apiKey) {
           const prompt = updatedMessages.map(m => `${m.sender === "user" ? "User" : "BioWeb AI"}: ${m.text}`).join("\n") + "\nBioWeb AI:";
           responseText = await callGeminiDirect(apiKey, prompt, systemInstruction);
         } else if (isStatic) {
@@ -175,7 +182,12 @@ export default function ChatView() {
       if (!responseText) {
         const response = await fetch("/api/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "x-active-provider": activeProvider,
+            "x-gemini-api-key": apiKey,
+            "x-openai-api-key": openAiKey
+          },
           body: JSON.stringify({ messages: updatedMessages })
         });
 
@@ -213,24 +225,23 @@ export default function ChatView() {
         speakText(responseText);
       }
     } catch (err: any) {
-      console.error("Chat error:", err);
-      const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");
-      const errorText = isHighDemand
-        ? "The BioWeb clinical model is currently experiencing extremely high demand. My automatic server-side retries and model fallback attempts were also exhausted. Please wait a few moments and resubmit your symptom query."
-        : `Clinical Advisory: ${err.message || "My apologies, I encountered a temporary network connection issue. Please ensure your local or server API parameters are configured and try resubmitting your symptom question."}`;
-
-      const errorMsg: Message = {
+      console.warn("Chat model failed, falling back to offline diagnostic responses:", err);
+      const fallbackText = getOfflineChatResponse(inputText) + "\n\n*Notice: The server is experiencing high demand. Click 'Configure Gemini API Key' in the top banner to apply your own personal key for uninterrupted live AI assistant responses.*";
+      const fallbackMsg: Message = {
         id: "m-" + (Date.now() + 1),
         sender: "ai",
-        text: errorText,
+        text: fallbackText,
         timestamp: new Date()
       };
       setSessions(prev => prev.map(s => {
         if (s.id === activeSessionId) {
-          return { ...s, messages: [...s.messages, errorMsg] };
+          return { ...s, messages: [...s.messages, fallbackMsg] };
         }
         return s;
       }));
+      if (isSpeechEnabled) {
+        speakText(fallbackText);
+      }
     } finally {
       setIsLoading(false);
     }

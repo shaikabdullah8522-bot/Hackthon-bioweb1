@@ -255,15 +255,37 @@ export default function DashboardView({ stats, setStats, profile, setProfile }: 
                     />
                   </div>
                   <div className="space-y-1">
-                    <span className="text-[10px] uppercase font-mono text-slate-500 block">Emergency No.</span>
+                    <span className="text-[10px] uppercase font-mono text-slate-500 block">Weight (kg)</span>
                     <input
-                      type="text"
-                      value={editForm.emergencyContact}
-                      onChange={(e) => setEditForm({ ...editForm, emergencyContact: e.target.value })}
+                      type="number"
+                      placeholder="e.g. 70"
+                      value={editForm.weight !== undefined ? editForm.weight : ""}
+                      onChange={(e) => setEditForm({ ...editForm, weight: e.target.value !== "" ? parseInt(e.target.value) || undefined : undefined })}
                       className="w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-cyan-400"
-                      required
                     />
                   </div>
+                </div>
+
+                <div className="space-y-1">
+                  <span className="text-[10px] uppercase font-mono text-slate-500 block">Emergency No.</span>
+                  <input
+                    type="text"
+                    value={editForm.emergencyContact}
+                    onChange={(e) => setEditForm({ ...editForm, emergencyContact: e.target.value })}
+                    className="w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-cyan-400"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <span className="text-[10px] uppercase font-mono text-slate-500 block">Existing Conditions</span>
+                  <textarea
+                    rows={2}
+                    placeholder="e.g. Hypertension, Asthma, none..."
+                    value={editForm.existingConditions || ""}
+                    onChange={(e) => setEditForm({ ...editForm, existingConditions: e.target.value })}
+                    className="w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-cyan-400 resize-none text-xs"
+                  />
                 </div>
 
                 <div className="flex gap-2 pt-2">
@@ -308,9 +330,22 @@ export default function DashboardView({ stats, setStats, profile, setProfile }: 
                   </div>
                 </div>
 
-                <div className="space-y-0.5 text-xs">
-                  <span className="text-[10px] uppercase font-mono text-slate-500 font-semibold block">Emergency Contact</span>
-                  <span className="text-slate-300 font-medium font-mono">{profile.emergencyContact}</span>
+                <div className="grid grid-cols-2 gap-4 text-xs pt-2 border-t border-white/5">
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] uppercase font-mono text-slate-500 font-semibold block">Weight</span>
+                    <span className="text-slate-300 font-medium">{profile.weight ? `${profile.weight} kg` : "Not specified"}</span>
+                  </div>
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] uppercase font-mono text-slate-500 font-semibold block">Emergency No.</span>
+                    <span className="text-slate-300 font-medium font-mono truncate block">{profile.emergencyContact}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-0.5 text-xs pt-2 border-t border-white/5">
+                  <span className="text-[10px] uppercase font-mono text-slate-500 font-semibold block">Existing Conditions</span>
+                  <p className="text-slate-300 font-medium leading-relaxed">
+                    {profile.existingConditions ? profile.existingConditions : <span className="text-slate-500 italic">None declared</span>}
+                  </p>
                 </div>
 
                 {profile.initialSymptoms && (

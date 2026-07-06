@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { createWorker } from "tesseract.js";
 import { MedicineDetails } from "../types";
-import { isStaticDeployment, getClientApiKey, callGeminiDirect, parsePrescriptionOffline } from "../utils/apiFallback";
+import { isStaticDeployment, getClientApiKey, getClientOpenAIKey, getActiveAIProvider, callGeminiDirect, callOpenAIDirect, parsePrescriptionOffline } from "../utils/apiFallback";
 
 export default function ScannerView() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -51,10 +51,38 @@ export default function ScannerView() {
       let parsedData: any = null;
 
       const apiKey = getClientApiKey();
+      const openAiKey = getClientOpenAIKey();
+      const activeProvider = getActiveAIProvider();
       const isStatic = isStaticDeployment();
 
-      if (isStatic || apiKey) {
-        if (apiKey) {
+      const useDirectMode = isStatic || (activeProvider === "openai" ? openAiKey : apiKey);
+
+      if (useDirectMode) {
+        if (activeProvider === "openai" && openAiKey) {
+          const prompt = 
+            `Analyze the raw extracted prescription text and identify any recognizable medications. ` +
+            `For each identified medicine, lookup credible medical details and formulate structured outputs. ` +
+            `Raw prescription OCR text: "${text}"`;
+          const systemInstruction = 
+            "You are an expert pharmacology parser. Read messy OCR text, identify medicines, and return structured info in JSON. " +
+            "You MUST return a JSON object conforming exactly to this structure:\n" +
+            "{\n" +
+            "  \"medicines\": [\n" +
+            "    {\n" +
+            "      \"name\": \"Standard name\",\n" +
+            "      \"uses\": [\"use1\"],\n" +
+            "      \"dosage\": \"string\",\n" +
+            "      \"sideEffects\": [\"sideEffect1\"],\n" +
+            "      \"storage\": \"string\",\n" +
+            "      \"manufacturer\": \"string\",\n" +
+            "      \"alternatives\": [\"alt1\"],\n" +
+            "      \"warnings\": \"string\"\n" +
+            "    }\n" +
+            "  ]\n" +
+            "}";
+          const jsonText = await callOpenAIDirect(openAiKey, prompt, systemInstruction, true);
+          parsedData = JSON.parse(jsonText || '{"medicines":[]}');
+        } else if (activeProvider === "gemini" && apiKey) {
           const prompt = 
             `Analyze the raw extracted prescription text and identify any recognizable medications. ` +
             `For each identified medicine, lookup credible medical details and formulate structured outputs. ` +
@@ -93,7 +121,12 @@ export default function ScannerView() {
       if (!parsedData) {
         const res = await fetch("/api/extract-prescription", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "x-active-provider": activeProvider,
+            "x-gemini-api-key": apiKey,
+            "x-openai-api-key": openAiKey
+          },
           body: JSON.stringify({ text })
         });
 
@@ -107,13 +140,12 @@ export default function ScannerView() {
 
       setExtractedMeds(parsedData.medicines || []);
     } catch (err: any) {
-      console.error(err);
-      const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");
-      setError(
-        isHighDemand 
-          ? "The prescription parser model is currently experiencing extremely high demand. Please try again in a few moments."
-          : `Unable to build pharmacological details. Details: ${err.message || "Please enter a clearer prescription."}`
-      );
+      console.warn("Prescription parsing failed, falling back to offline parser:", err);
+      const fallbackData = parsePrescriptionOffline(text);
+      if (fallbackData && fallbackData.medicines && fallbackData.medicines.length > 0) {
+        fallbackData.medicines[0].warnings = "DEMO FALLBACK (System under high demand - Click 'Configure Gemini API Key' in the top banner to apply your own personal key for live high-speed prescription parsing): " + fallbackData.medicines[0].warnings;
+      }
+      setExtractedMeds(fallbackData.medicines || []);
     } finally {
       setIsProcessing(false);
     }

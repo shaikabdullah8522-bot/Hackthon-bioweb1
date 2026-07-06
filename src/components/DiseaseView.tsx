@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { DISEASE_LIBRARY } from "../data";
 import { DiseaseLibraryItem } from "../types";
-import { isStaticDeployment, getClientApiKey, callGeminiDirect, getOfflineDiseaseDetails } from "../utils/apiFallback";
+import { isStaticDeployment, getClientApiKey, getClientOpenAIKey, getActiveAIProvider, callGeminiDirect, callOpenAIDirect, getOfflineDiseaseDetails } from "../utils/apiFallback";
 
 export default function DiseaseView() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -32,10 +32,32 @@ export default function DiseaseView() {
       let diseaseData: any = null;
 
       const apiKey = getClientApiKey();
+      const openAiKey = getClientOpenAIKey();
+      const activeProvider = getActiveAIProvider();
       const isStatic = isStaticDeployment();
 
-      if (isStatic || apiKey) {
-        if (apiKey) {
+      const useDirectMode = isStatic || (activeProvider === "openai" ? openAiKey : apiKey);
+
+      if (useDirectMode) {
+        if (activeProvider === "openai" && openAiKey) {
+          const prompt = `Formulate a comprehensive medical fact sheet for the disease pathology named: "${term}". Ensure accuracy and clear professional tone.`;
+          const systemInstruction = 
+            "You are an expert clinical pathology database system. Return complete disease monographs in structured JSON conforming exactly to this structure:\n" +
+            "{\n" +
+            "  \"name\": \"string (disease name)\",\n" +
+            "  \"image\": \"string (high-quality medical unsplash stock image url)\",\n" +
+            "  \"symptoms\": [\"symptom1\"],\n" +
+            "  \"causes\": [\"cause1\"],\n" +
+            "  \"stages\": [\"stage1\"],\n" +
+            "  \"complications\": [\"complication1\"],\n" +
+            "  \"treatment\": \"string\",\n" +
+            "  \"medicines\": [\"medicine1\"],\n" +
+            "  \"lifestyleTips\": [\"tip1\"],\n" +
+            "  \"emergencySigns\": [\"sign1\"]\n" +
+            "}";
+          const jsonText = await callOpenAIDirect(openAiKey, prompt, systemInstruction, true);
+          diseaseData = JSON.parse(jsonText || "{}");
+        } else if (activeProvider === "gemini" && apiKey) {
           const prompt = `Formulate a comprehensive medical fact sheet for the disease pathology named: "${term}". Ensure accuracy and clear professional tone.`;
           const systemInstruction = "You are an expert clinical pathology database system. Return complete disease monographs in structured JSON. Ensure no field is left unpopulated.";
           const responseSchema = {
@@ -66,7 +88,12 @@ export default function DiseaseView() {
       if (!diseaseData) {
         const res = await fetch("/api/disease-details", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "x-active-provider": activeProvider,
+            "x-gemini-api-key": apiKey,
+            "x-openai-api-key": openAiKey
+          },
           body: JSON.stringify({ name: term })
         });
 
@@ -94,13 +121,17 @@ export default function DiseaseView() {
       });
       setSelectedDisease(diseaseData);
     } catch (err: any) {
-      console.error(err);
-      const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");
-      setError(
-        isHighDemand 
-          ? "The medical symptom predictor model is currently experiencing extremely high demand. Please try again in a few moments."
-          : `Failed to compile pathology monograph: ${err.message || "Please try again."}`
-      );
+      console.warn("Pathology lookup failed, falling back to offline details:", err);
+      const fallbackData = getOfflineDiseaseDetails(term);
+      fallbackData.treatment = "DEMO MODE NOTICE (System under high demand - Click 'Configure Gemini API Key' in the top banner to apply a personal key for live high-speed pathology reports): " + fallbackData.treatment;
+      
+      setCustomDiseases(prev => {
+        if (prev.some(d => d.name.toLowerCase() === fallbackData.name.toLowerCase())) {
+          return prev;
+        }
+        return [...prev, fallbackData];
+      });
+      setSelectedDisease(fallbackData);
     } finally {
       setIsLoading(false);
     }

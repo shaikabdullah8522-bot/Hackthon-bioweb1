@@ -13,7 +13,6 @@ export default function IntakeModal({ onSubmit }: IntakeModalProps) {
   const [gender, setGender] = useState("Male");
   const [bloodGroup, setBloodGroup] = useState("O+ Pos");
   const [emergencyContact, setEmergencyContact] = useState("");
-  const [symptoms, setSymptoms] = useState("");
   const [error, setError] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -30,10 +29,6 @@ export default function IntakeModal({ onSubmit }: IntakeModalProps) {
       setError("Please enter an emergency contact number.");
       return;
     }
-    if (!symptoms.trim()) {
-      setError("Please describe the patient's current symptoms or health concerns.");
-      return;
-    }
 
     const newProfile: UserProfile = {
       avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
@@ -42,7 +37,6 @@ export default function IntakeModal({ onSubmit }: IntakeModalProps) {
       gender,
       bloodGroup,
       emergencyContact: emergencyContact.trim(),
-      initialSymptoms: symptoms.trim(),
     };
 
     onSubmit(newProfile);
@@ -54,7 +48,6 @@ export default function IntakeModal({ onSubmit }: IntakeModalProps) {
     setGender("Male");
     setBloodGroup("O+ Pos");
     setEmergencyContact("+1 (555) 019-2831");
-    setSymptoms("Frequent dry cough, mild chest tightness, and fatigue over the last 3 days.");
     setError("");
   };
 
@@ -189,22 +182,6 @@ export default function IntakeModal({ onSubmit }: IntakeModalProps) {
                 required
               />
             </div>
-          </div>
-
-          {/* Current Symptoms */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-bold font-mono text-slate-400 uppercase tracking-wider block">Current Symptoms & Reason for Consult</label>
-            <textarea
-              value={symptoms}
-              onChange={(e) => {
-                setSymptoms(e.target.value);
-                if (error) setError("");
-              }}
-              rows={3}
-              placeholder="Please describe symptoms, severity, and when they started (e.g. severe headache for 2 days, dry throat)..."
-              className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/40 text-white transition resize-none"
-              required
-            />
           </div>
 
           <div className="pt-4 flex flex-col sm:flex-row gap-4">

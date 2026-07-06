@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { DiseasePrediction } from "../types";
 import { COMMON_SYMPTOMS } from "../data";
-import { isStaticDeployment, getClientApiKey, callGeminiDirect, getOfflinePrediction } from "../utils/apiFallback";
+import { isStaticDeployment, getClientApiKey, getClientOpenAIKey, getActiveAIProvider, callGeminiDirect, callOpenAIDirect, getOfflinePrediction } from "../utils/apiFallback";
 
 export default function PredictorView() {
   const [selectedSymptoms, setSelectedSymptoms] = useState<string[]>([]);
@@ -54,10 +54,33 @@ export default function PredictorView() {
       let predictionData: any = null;
 
       const apiKey = getClientApiKey();
+      const openAiKey = getClientOpenAIKey();
+      const activeProvider = getActiveAIProvider();
       const isStatic = isStaticDeployment();
 
-      if (isStatic || apiKey) {
-        if (apiKey) {
+      const useDirectMode = isStatic || (activeProvider === "openai" ? openAiKey : apiKey);
+
+      if (useDirectMode) {
+        if (activeProvider === "openai" && openAiKey) {
+          const symptomsStr = selectedSymptoms.join(", ");
+          const systemInstruction = 
+            "You are an educational clinical database model. Analyze symptoms and return an objective estimation of the likely condition in JSON format. Be conservative and highlight that it's educational. " +
+            "You MUST return a JSON object conforming exactly to this structure:\n" +
+            "{\n" +
+            "  \"disease\": \"Name of the likely medical condition\",\n" +
+            "  \"confidence\": 80,\n" +
+            "  \"severity\": \"Low\",\n" +
+            "  \"symptoms\": [\"symptom1\"],\n" +
+            "  \"treatmentOverview\": \"Brief non-prescription overview description\",\n" +
+            "  \"specialist\": \"Medical specialist category\",\n" +
+            "  \"medicalTests\": [\"test1\"],\n" +
+            "  \"emergencyWarning\": \"Specific emergency warnings\",\n" +
+            "  \"prevention\": [\"prevention1\"]\n" +
+            "}";
+          const prompt = `Analyze the following patient symptoms and predict the most likely condition based on educational knowledge. Symptoms: "${symptomsStr}".`;
+          const jsonText = await callOpenAIDirect(openAiKey, prompt, systemInstruction, true);
+          predictionData = JSON.parse(jsonText || "{}");
+        } else if (activeProvider === "gemini" && apiKey) {
           const symptomsStr = selectedSymptoms.join(", ");
           const systemInstruction = "You are an educational clinical database model. Analyze symptoms and return an objective estimation of the likely condition. Be conservative and highlight that it's educational.";
           const prompt = `Analyze the following patient symptoms and predict the most likely condition based on educational knowledge. Symptoms: "${symptomsStr}".`;
@@ -96,7 +119,12 @@ export default function PredictorView() {
       if (!predictionData) {
         const res = await fetch("/api/predict", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "x-active-provider": activeProvider,
+            "x-gemini-api-key": apiKey,
+            "x-openai-api-key": openAiKey
+          },
           body: JSON.stringify({ symptoms: selectedSymptoms })
         });
 
@@ -117,13 +145,10 @@ export default function PredictorView() {
 
       setPrediction(predictionData);
     } catch (err: any) {
-      console.error(err);
-      const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");
-      setError(
-        isHighDemand 
-          ? "The medical symptom predictor model is currently experiencing extremely high demand. Please try again in a few moments."
-          : `Failed to run symptoms analysis. Details: ${err.message || "Please verify your connection parameters."}`
-      );
+      console.warn("Predictor analysis failed, falling back to offline estimation:", err);
+      const fallbackPrediction = getOfflinePrediction(selectedSymptoms);
+      fallbackPrediction.treatmentOverview = "DEMO FALLBACK (System under high demand - Click 'Configure Gemini API Key' in the top banner to apply your own personal key for live high-speed analysis): " + fallbackPrediction.treatmentOverview;
+      setPrediction(fallbackPrediction);
     } finally {
       setIsLoading(false);
     }

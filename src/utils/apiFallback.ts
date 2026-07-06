@@ -21,6 +21,133 @@ export function setClientApiKey(key: string) {
   }
 }
 
+export function getClientOpenAIKey(): string {
+  return localStorage.getItem("user_openai_api_key") || "";
+}
+
+export function setClientOpenAIKey(key: string) {
+  if (key) {
+    localStorage.setItem("user_openai_api_key", key.trim());
+  } else {
+    localStorage.removeItem("user_openai_api_key");
+  }
+}
+
+export function getActiveAIProvider(): "gemini" | "openai" {
+  const provider = localStorage.getItem("active_ai_provider");
+  return provider === "openai" ? "openai" : "gemini";
+}
+
+export function setActiveAIProvider(provider: "gemini" | "openai") {
+  localStorage.setItem("active_ai_provider", provider);
+}
+
+export async function testGeminiKey(apiKey: string): Promise<{ success: boolean; error?: string }> {
+  if (!apiKey) return { success: false, error: "Please enter a key before testing." };
+  try {
+    const model = "gemini-2.5-flash";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: "Respond only with OK" }] }]
+      })
+    });
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      const message = errData.error?.message || `HTTP error ${response.status}`;
+      return { success: false, error: message };
+    }
+    const data = await response.json();
+    if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
+      return { success: true };
+    }
+    return { success: false, error: "Empty response generated." };
+  } catch (err: any) {
+    return { success: false, error: err.message || "Failed to reach Google Gemini API." };
+  }
+}
+
+export async function testOpenAIKey(apiKey: string): Promise<{ success: boolean; error?: string }> {
+  if (!apiKey) return { success: false, error: "Please enter a key before testing." };
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey.trim()}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "Respond only with OK" }],
+        max_tokens: 5
+      })
+    });
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      const message = errData.error?.message || `HTTP error ${response.status}`;
+      return { success: false, error: message };
+    }
+    const data = await response.json();
+    if (data.choices?.[0]?.message?.content) {
+      return { success: true };
+    }
+    return { success: false, error: "Empty response generated." };
+  } catch (err: any) {
+    return { success: false, error: err.message || "Failed to reach OpenAI API." };
+  }
+}
+
+/**
+ * Direct call to OpenAI API from the client (for static environments)
+ */
+export async function callOpenAIDirect(
+  apiKey: string,
+  prompt: string,
+  systemInstruction?: string,
+  responseSchema?: any
+): Promise<string> {
+  const url = "https://api.openai.com/v1/chat/completions";
+  const messages = [];
+  if (systemInstruction) {
+    messages.push({ role: "system", content: systemInstruction });
+  }
+  messages.push({ role: "user", content: prompt });
+
+  const body: any = {
+    model: "gpt-4o-mini",
+    messages: messages,
+    temperature: 0.2
+  };
+
+  if (responseSchema) {
+    body.response_format = { type: "json_object" };
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    const message = errData.error?.message || `HTTP error ${response.status}`;
+    throw new Error(message);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) {
+    throw new Error("No response generated from OpenAI API.");
+  }
+  return text;
+}
+
 /**
  * Direct call to Gemini API from the client (for static environments)
  */

@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { MedicineDetails } from "../types";
 import { MEDICINE_DATABASE } from "../data";
-import { isStaticDeployment, getClientApiKey, callGeminiDirect, getOfflineMedicineDetails } from "../utils/apiFallback";
+import { isStaticDeployment, getClientApiKey, getClientOpenAIKey, getActiveAIProvider, callGeminiDirect, callOpenAIDirect, getOfflineMedicineDetails } from "../utils/apiFallback";
 
 interface SearchableMedicine {
   name: string;
@@ -139,10 +139,38 @@ export default function MedicineView() {
       let medData: any = null;
 
       const apiKey = getClientApiKey();
+      const openAiKey = getClientOpenAIKey();
+      const activeProvider = getActiveAIProvider();
       const isStatic = isStaticDeployment();
 
-      if (isStatic || apiKey) {
-        if (apiKey) {
+      const useDirectMode = isStatic || (activeProvider === "openai" ? openAiKey : apiKey);
+
+      if (useDirectMode) {
+        if (activeProvider === "openai" && openAiKey) {
+          const prompt = `Formulate a comprehensive medical fact sheet for the medicine named: "${term}". Ensure accuracy and clear professional tone.`;
+          const systemInstruction = 
+            "You are an expert clinical database system. Return complete medical monographs in structured JSON conforming exactly to this structure:\n" +
+            "{\n" +
+            "  \"name\": \"string (name of medicine)\",\n" +
+            "  \"uses\": [\"use1\"],\n" +
+            "  \"dosage\": \"string\",\n" +
+            "  \"sideEffects\": [\"sideEffect1\"],\n" +
+            "  \"storage\": \"string\",\n" +
+            "  \"manufacturer\": \"string\",\n" +
+            "  \"composition\": \"string (Chemical formulation or main strength ingredients)\",\n" +
+            "  \"pregnancyWarning\": \"string (Is it safe during pregnancy? Detail warnings)\",\n" +
+            "  \"breastfeedingWarning\": \"string (Is it safe during breastfeeding?)\",\n" +
+            "  \"alcoholInteraction\": \"string\",\n" +
+            "  \"foodInteraction\": \"string\",\n" +
+            "  \"expiryInfo\": \"string\",\n" +
+            "  \"availableStrengths\": [\"strength1\"],\n" +
+            "  \"alternatives\": [\"equivalent1\"],\n" +
+            "  \"warnings\": \"string (Contraindications and crucial warnings)\",\n" +
+            "  \"faqs\": [{\"question\": \"faq question\", \"answer\": \"faq answer\"}]\n" +
+            "}";
+          const jsonText = await callOpenAIDirect(openAiKey, prompt, systemInstruction, true);
+          medData = JSON.parse(jsonText || "{}");
+        } else if (activeProvider === "gemini" && apiKey) {
           const prompt = `Formulate a comprehensive medical fact sheet for the medicine named: "${term}". Ensure accuracy and clear professional tone.`;
           const systemInstruction = "You are an expert clinical database system. Return complete medical monographs in structured JSON. Ensure no field is left unpopulated.";
           const responseSchema = {
@@ -191,7 +219,12 @@ export default function MedicineView() {
       if (!medData) {
         const res = await fetch("/api/medicine-details", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "x-active-provider": activeProvider,
+            "x-gemini-api-key": apiKey,
+            "x-openai-api-key": openAiKey
+          },
           body: JSON.stringify({ name: term })
         });
 
@@ -212,13 +245,10 @@ export default function MedicineView() {
 
       setMedicine(medData);
     } catch (err: any) {
-      console.error(err);
-      const isHighDemand = err.message?.includes("503") || err.message?.includes("UNAVAILABLE") || err.message?.includes("demand");
-      setError(
-        isHighDemand 
-          ? "The pharmacopoeia database generator is currently experiencing extremely high demand. Please try again in a few moments, or click one of our curated molecules above."
-          : `No pre-saved record found for "${term}", and the AI database generator experienced an issue: ${err.message || "Please try searching one of our curated molecules above."}`
-      );
+      console.warn("API monograph generation failed, falling back to offline details:", err);
+      const fallbackMed = getOfflineMedicineDetails(term);
+      fallbackMed.warnings = "FALLBACK MONOGRAPH (System under high demand - Click 'Configure Gemini API Key' at the top to apply your own personal key for uninterrupted high-speed AI monographs): " + fallbackMed.warnings;
+      setMedicine(fallbackMed);
     } finally {
       setIsLoading(false);
     }

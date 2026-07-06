@@ -77,6 +77,8 @@ export interface UserProfile {
   bloodGroup: string;
   emergencyContact: string;
   initialSymptoms?: string;
+  weight?: number;
+  existingConditions?: string;
 }
 
 export interface DashboardStats {
